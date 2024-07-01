@@ -3,98 +3,36 @@ import numpy as np
 
 class Beeline:
     def __init__(self, path_kms, path_oper, delimiter=";"):
-        # Загрузка данных из файлов CSV
-        self.df_kms = pd.read_csv(path_kms, delimiter=delimiter)
-        self.df_oper = pd.read_csv(path_oper, delimiter=delimiter)
-        self.delta = 3  # Дельта для сравнения времени и длительности звонка в секундах
-        self.prepare_data()  # Подготовка данных (переименование столбцов, преобразование типов данных)
+        self.path_kms = path_kms
+        self.path_oper = path_oper
+        self.delimiter = delimiter
+        self.df_kms, self.df_oper = self.load_and_prepare_data()
+        self.delta = 3
+    
+    def load_and_prepare_data(self):
+        def preprocess_df(df):
+            columns_mapping = {
+                "to_char": "Дата звонка",
+                "to_char.1": "Время звонка",
+                "phoneb": "Принимающий номер",
+                "to_char.2": "Длительность",
+                "?column?": "Длительность округленная до минут",
+            }
+            df.rename(columns=columns_mapping, inplace=True)
+            df.drop_duplicates(ignore_index=True, inplace=True)
+            df["Время звонка"] = pd.to_timedelta(df["Время звонка"], errors='coerce').dt.total_seconds().astype('Int64')
+            df["Длительность"] = pd.to_timedelta(df["Длительность"], errors='coerce').dt.total_seconds().astype('Int64')
+            return df
 
-    def prepare_data(self):
-        # Переименование столбцов для удобства работы
-        columns_mapping = {
-            "to_char": "Дата звонка",
-            "to_char.1": "Время звонка",
-            "phoneb": "Принимающий номер",
-            "to_char.2": "Длительность",
-            "?column?": "Длительность округленная до минут",
-        }
-        self.df_kms.rename(columns=columns_mapping, inplace=True)
-        self.df_oper.rename(columns=columns_mapping, inplace=True)
+        df_kms = pd.read_csv(self.path_kms, delimiter=self.delimiter)
+        df_oper = pd.read_csv(self.path_oper, delimiter=self.delimiter)
 
-        # Удаление дубликатов
-        self.df_kms = self.df_kms.drop_duplicates(ignore_index=True)
-        self.df_oper = self.df_oper.drop_duplicates(ignore_index=True)
+        df_kms = preprocess_df(df_kms)
+        df_oper = preprocess_df(df_oper)
 
-        # Преобразование столбцов времени и длительности в секунды
-        self.df_kms["Время звонка"] = (
-            pd.to_timedelta(self.df_kms["Время звонка"]).dt.total_seconds().astype(int)
-        )
-        self.df_oper["Время звонка"] = (
-            pd.to_timedelta(self.df_oper["Время звонка"]).dt.total_seconds().astype(int)
-        )
-        self.df_kms["Длительность"] = (
-            pd.to_timedelta(self.df_kms["Длительность"]).dt.total_seconds().astype(int)
-        )
-        self.df_oper["Длительность"] = (
-            pd.to_timedelta(self.df_oper["Длительность"]).dt.total_seconds().astype(int)
-        )
+        return df_kms, df_oper
 
-    def create_within_delta(self, df, time_col, duration_col):
-        # Создание DataFrame с необходимыми столбцами и переименование столбцов времени и длительности
-        return df[
-            ["Дата звонка", time_col, "Принимающий номер", duration_col]
-        ].rename(columns={time_col: "Время звонка", duration_col: "Длительность"})
-
-    def find_non_matched_calls(self, df_main, within_delta, numbers_not_in):
-        # Поиск несовпадающих звонков в основном DataFrame
-        non_matched_calls = df_main.merge(
-            within_delta,
-            on=["Дата звонка", "Время звонка", "Принимающий номер", "Длительность"],
-            how="left",
-            indicator=True,
-        )
-        # Оставляем только те звонки, которые есть только в основном DataFrame
-        non_matched_calls = non_matched_calls[
-            non_matched_calls["_merge"] == "left_only"
-        ][["Дата звонка", "Время звонка", "Принимающий номер", "Длительность"]]
-
-        # Поиск несовпадающих звонков во втором DataFrame
-        other_calls = non_matched_calls.merge(
-            numbers_not_in,
-            on=["Дата звонка", "Время звонка", "Принимающий номер", "Длительность"],
-            how="left",
-            indicator=True,
-        )
-        return other_calls[
-            other_calls["_merge"] == "left_only"
-        ][["Дата звонка", "Время звонка", "Принимающий номер", "Длительность"]]
-
-    def process_out_of_delta(self, out_of_delta):
-        # Обработка звонков, не попавших в дельту
-        mask1 = out_of_delta.duplicated(
-            subset=["Дата звонка", "Время звонка_kms", "Длительность_kms", "Принимающий номер"],
-            keep="first",
-        ) & (out_of_delta["_merge"] == "both")
-        out_of_delta.loc[mask1, ["Время звонка_kms", "Длительность_kms"]] = pd.NA
-
-        mask2 = out_of_delta.duplicated(
-            subset=["Дата звонка", "Принимающий номер", "Время звонка_oper", "Длительность_oper"],
-            keep="first",
-        ) & (out_of_delta["_merge"] == "both")
-        out_of_delta.loc[mask2, ["Время звонка_oper", "Длительность_oper"]] = pd.NA
-
-        # Преобразование времени и длительности из секунд в формат HH:MM:SS
-        out_of_delta["Время звонка_kms"] = pd.to_datetime(out_of_delta["Время звонка_kms"], unit="s").dt.strftime("%H:%M:%S")
-        out_of_delta["Время звонка_oper"] = pd.to_datetime(out_of_delta["Время звонка_oper"], unit="s").dt.strftime("%H:%M:%S")
-        out_of_delta["Длительность_kms"] = pd.to_datetime(out_of_delta["Длительность_kms"], unit="s").dt.strftime("%H:%M:%S")
-        out_of_delta["Длительность_oper"] = pd.to_datetime(out_of_delta["Длительность_oper"], unit="s").dt.strftime("%H:%M:%S")
-
-        return out_of_delta[
-            ["Дата звонка", "Время звонка_kms", "Длительность_kms", "Принимающий номер", "Время звонка_oper", "Длительность_oper"]
-        ]
-
-    def get_within_delta(self):
-        # Поиск совпадающих звонков с учетом дельты
+    def find_within_delta(self):
         matched_calls = self.df_kms.merge(
             self.df_oper,
             on=["Дата звонка", "Принимающий номер"],
@@ -112,22 +50,33 @@ class Beeline:
                 <= self.delta
             )
         ]
+
         return within_delta
 
-    def analyze_data(self):
-        # Получение совпадающих звонков с учетом дельты
-        within_delta = self.get_within_delta()
-        print(
-            f"Количество совпавших звонков: {within_delta.shape[0]} с учётом дельты +-{self.delta}(сек.) по времени и длительности звонка."
+    def find_non_matched_calls(self, df_main, within_delta, numbers_not_in):
+        non_matched_calls = df_main.merge(
+            within_delta,
+            on=["Дата звонка", "Время звонка", "Принимающий номер", "Длительность"],
+            how="left",
+            indicator=True,
         )
-        print(
-            f"Процент совпадений звонков в файле KMS с учётом дельты +-{self.delta}(сек.): {round(within_delta.shape[0] / self.df_kms.shape[0] * 100, 1)}%"
-        )
-        print(
-            f"Процент совпадений звонков в файле OPER с учётом дельты +-{self.delta}(сек.): {round(within_delta.shape[0] / self.df_oper.shape[0] * 100, 1)}%"
-        )
+        non_matched_calls = non_matched_calls[
+            non_matched_calls["_merge"] == "left_only"
+        ][["Дата звонка", "Время звонка", "Принимающий номер", "Длительность"]]
 
-        # Поиск номеров, отсутствующих в одном из файлов
+        other_calls = non_matched_calls.merge(
+            numbers_not_in,
+            on=["Дата звонка", "Время звонка", "Принимающий номер", "Длительность"],
+            how="left",
+            indicator=True,
+        )
+        return other_calls[
+            other_calls["_merge"] == "left_only"
+        ][["Дата звонка", "Время звонка", "Принимающий номер", "Длительность"]]
+
+    def analyze_data(self):
+        within_delta = self.find_within_delta()
+
         numbers_not_in_oper = self.df_kms.merge(
             self.df_oper, on=["Дата звонка", "Принимающий номер"], how="left", indicator=True
         )
@@ -146,25 +95,16 @@ class Beeline:
             columns={"Время звонка_x": "Время звонка", "Длительность_x": "Длительность"}
         )
 
-        print(
-            f"Кол-во номеров в файле KMS отсутствующих в файле OPER: {numbers_not_in_oper.shape[0]}"
-        )
-        print(
-            f"Процент номеров в файле KMS отсутствующих в файле OPER: {round(numbers_not_in_oper.shape[0] / self.df_kms.shape[0] * 100, 1)}%"
-        )
-        print(
-            f"Кол-во номеров в файле OPER отсутствующих в файле KMS: {numbers_not_in_kms.shape[0]}"
-        )
-        print(
-            f"Процент номеров в файле OPER отсутствующих в файле KMS: {round(numbers_not_in_kms.shape[0] / self.df_kms.shape[0] * 100, 1)}%"
-        )
+        within_delta_kms = within_delta[
+            ["Дата звонка", "Время звонка_x", "Принимающий номер", "Длительность_x"]
+        ].rename(columns={"Время звонка_x": "Время звонка", "Длительность_x": "Длительность"})
 
-        # Создание DataFrame с совпадающими звонками
-        within_delta_kms = self.create_within_delta(within_delta, "Время звонка_x", "Длительность_x")
-        within_delta_oper = self.create_within_delta(within_delta, "Время звонка_y", "Длительность_y")
-
-        # Поиск звонков, не попавших в дельту
         other_calls_kms = self.find_non_matched_calls(self.df_kms, within_delta_kms, numbers_not_in_oper)
+
+        within_delta_oper = within_delta[
+            ["Дата звонка", "Время звонка_y", "Принимающий номер", "Длительность_y"]
+        ].rename(columns={"Время звонка_y": "Время звонка", "Длительность_y": "Длительность"})
+
         other_calls_oper = self.find_non_matched_calls(self.df_oper, within_delta_oper, numbers_not_in_kms)
 
         out_of_delta = other_calls_kms.merge(
@@ -173,14 +113,72 @@ class Beeline:
             suffixes=("_kms", "_oper"),
             how="outer",
             indicator=True,
-        )
+        ).sort_values(by=["Дата звонка", "Время звонка_kms", "Время звонка_oper"])
 
-        # Обработка звонков, не попавших в дельту
-        out_of_delta_processed = self.process_out_of_delta(out_of_delta)
-        return out_of_delta_processed
+        out_of_delta = self.process_out_of_delta(out_of_delta)
 
-# Пример вызова класса
+  
+        numbers_not_in_oper["Время звонка"] = pd.to_datetime(numbers_not_in_oper["Время звонка"], unit="s", errors='coerce').dt.strftime("%H:%M:%S")
+        numbers_not_in_oper["Длительность"] = pd.to_datetime(numbers_not_in_oper["Длительность"], unit="s", errors='coerce').dt.strftime("%H:%M:%S")
+
+        numbers_not_in_kms["Время звонка"] = pd.to_datetime(numbers_not_in_kms["Время звонка"], unit="s", errors='coerce').dt.strftime("%H:%M:%S")
+        numbers_not_in_kms["Длительность"] = pd.to_datetime(numbers_not_in_kms["Длительность"], unit="s", errors='coerce').dt.strftime("%H:%M:%S")
+
+        within_delta["Время звонка_x"] = pd.to_datetime(within_delta["Время звонка_x"], unit="s", errors='coerce').dt.strftime("%H:%M:%S")
+        within_delta["Длительность_x"] = pd.to_datetime(within_delta["Длительность_x"], unit="s", errors='coerce').dt.strftime("%H:%M:%S")
+        within_delta["Время звонка_y"] = pd.to_datetime(within_delta["Время звонка_y"], unit="s", errors='coerce').dt.strftime("%H:%M:%S")
+        within_delta["Длительность_y"] = pd.to_datetime(within_delta["Длительность_y"], unit="s", errors='coerce').dt.strftime("%H:%M:%S")
+
+        return within_delta, out_of_delta, numbers_not_in_oper, numbers_not_in_kms
+
+    def process_out_of_delta(self, out_of_delta):
+        def update_merge(row):
+            if row["_merge"] == "both" and pd.isna(row["Время звонка_kms"]) and pd.isna(row["Длительность_kms"]):
+                return "right_only"
+            elif row["_merge"] == "both" and pd.isna(row["Время звонка_oper"]) and pd.isna(row["Длительность_oper"]):
+                return "left_only"
+            return row["_merge"]
+
+        out_of_delta["Время звонка_kms"] = pd.to_datetime(out_of_delta["Время звонка_kms"], unit="s", errors='coerce').dt.strftime("%H:%M:%S")
+        out_of_delta["Время звонка_oper"] = pd.to_datetime(out_of_delta["Время звонка_oper"], unit="s", errors='coerce').dt.strftime("%H:%M:%S")
+        out_of_delta["Длительность_kms"] = pd.to_datetime(out_of_delta["Длительность_kms"], unit="s", errors='coerce').dt.strftime("%H:%M:%S")
+        out_of_delta["Длительность_oper"] = pd.to_datetime(out_of_delta["Длительность_oper"], unit="s", errors='coerce').dt.strftime("%H:%M:%S")
+
+        out_of_delta["_merge"] = out_of_delta.apply(update_merge, axis=1)
+
+        out_of_delta["Комментарий"] = out_of_delta["_merge"].map({
+            "both": f"Звонок вне дельты ±{self.delta}сек.",
+            "left_only": "Звонок из отчета корпоративной детализации",
+            "right_only": "Звонок из отчета детализации оператора"
+        })
+
+        return out_of_delta[
+            ["Дата звонка", "Время звонка_kms", "Длительность_kms", "Принимающий номер", "Время звонка_oper", "Длительность_oper", "Комментарий"]
+        ]
+
+    def save_reports_to_excel(self, within_delta, out_of_delta, numbers_not_in_oper, numbers_not_in_kms, output_path="reports.xlsx"):
+        with pd.ExcelWriter(output_path) as writer:
+            within_delta.to_excel(writer, sheet_name='within_delta', index=False)
+            out_of_delta.to_excel(writer, sheet_name='out_of_delta', index=False)
+            numbers_not_in_oper.to_excel(writer, sheet_name='numbers_not_in_oper', index=False)
+            numbers_not_in_kms.to_excel(writer, sheet_name='numbers_not_in_kms', index=False)
+
+
 beeline = Beeline("beel_kms.csv", "beel_oper.csv")
-out_of_delta = beeline.analyze_data()
+within_delta, out_of_delta, numbers_not_in_oper, numbers_not_in_kms = beeline.analyze_data()
+beeline.save_reports_to_excel(within_delta, out_of_delta, numbers_not_in_oper, numbers_not_in_kms)
+
+print("DataFrame within_delta:")
+print(within_delta.head())
+
+print("\nDataFrame out_of_delta:")
+print(out_of_delta.head())
+
+print("\nDataFrame numbers_not_in_oper:")
+print(numbers_not_in_oper.head())
+
+print("\nDataFrame numbers_not_in_kms:")
+print(numbers_not_in_kms.head())
+
 
 
