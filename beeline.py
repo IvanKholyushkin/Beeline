@@ -182,4 +182,5 @@ class Beeline:
 # Пример вызова класса
 beeline = Beeline("beel_kms.csv", "beel_oper.csv")
 out_of_delta = beeline.analyze_data()
-print(out_of_delta)
+
+
